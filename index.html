@@ -1,0 +1,1103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Pune Air Quality — IoT Sensor &amp; Cloud Monitor</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://cdn.tailwindcss.com/3.4.17"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="https://unpkg.com/lucide@0.460.0/dist/umd/lucide.min.js"></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'system-ui', 'sans-serif'],
+            mono: ['JetBrains Mono', 'ui-monospace', 'monospace'],
+          }
+        }
+      }
+    };
+  </script>
+  <style>
+    body {
+      font-family: 'Inter', system-ui, sans-serif;
+      background-color: #fafafa;
+      color: #111827;
+    }
+    input[type="range"] {
+      accent-color: #111827;
+    }
+    .clean-scroll::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    .clean-scroll::-webkit-scrollbar-track {
+      background: #f3f4f6;
+    }
+    .clean-scroll::-webkit-scrollbar-thumb {
+      background: #d1d5db;
+      border-radius: 3px;
+    }
+    @keyframes pulse-soft {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+    .live-dot {
+      animation: pulse-soft 1.8s ease-in-out infinite;
+    }
+    @keyframes plume-pulse {
+      0% { transform: translate(-50%, -50%) scale(0.6); opacity: 0.65; }
+      100% { transform: translate(-50%, -50%) scale(2.2); opacity: 0; }
+    }
+    .aqi-halo {
+      position: relative;
+      width: 0;
+      height: 0;
+      pointer-events: none;
+    }
+    .aqi-halo-ring {
+      position: absolute;
+      left: 0;
+      top: 0;
+      border-radius: 9999px;
+      animation: plume-pulse 2.2s ease-out infinite;
+    }
+    @keyframes packet-travel {
+      0% { left: 4%; opacity: 0; }
+      15% { opacity: 1; }
+      85% { opacity: 1; }
+      100% { left: 96%; opacity: 0; }
+    }
+    .packet-dot {
+      position: absolute;
+      top: 50%;
+      width: 8px;
+      height: 8px;
+      border-radius: 9999px;
+      transform: translate(-50%, -50%);
+      animation: packet-travel 0.7s ease-in-out forwards;
+    }
+  </style>
+</head>
+<body class="min-h-screen antialiased selection:bg-gray-900 selection:text-white">
+  <!-- Toast -->
+  <div id="toast" class="fixed bottom-5 right-5 z-50 hidden items-center gap-2 rounded-full border border-gray-200 bg-white px-4 py-2 text-xs font-medium text-gray-800 shadow-lg">
+    <span class="h-2 w-2 rounded-full bg-emerald-500"></span>
+    <span id="toastText">Updated</span>
+  </div>
+
+  <!-- Minimal Top Navigation Bar -->
+  <header class="sticky top-0 z-30 border-b border-gray-200 bg-white/95 backdrop-blur">
+    <div class="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-6">
+      <div class="flex items-center gap-6">
+        <div class="flex items-center gap-2.5">
+          <div class="flex h-8 w-8 items-center justify-center rounded-lg bg-gray-900 text-white">
+            <i data-lucide="wind" class="h-4 w-4"></i>
+          </div>
+          <span class="text-sm font-semibold tracking-tight text-gray-900">Pune AQI Monitor</span>
+        </div>
+
+        <!-- Multi-Page Nav -->
+        <nav class="flex items-center gap-1" aria-label="Primary">
+          <button type="button" data-page="overview" class="nav-btn rounded-lg bg-gray-100 px-3 py-1.5 text-xs font-medium text-gray-900">Overview</button>
+          <button type="button" data-page="map" class="nav-btn rounded-lg px-3 py-1.5 text-xs font-medium text-gray-500 hover:bg-gray-50 hover:text-gray-900">Pune Map</button>
+          <button type="button" data-page="simulator" class="nav-btn rounded-lg px-3 py-1.5 text-xs font-medium text-gray-500 hover:bg-gray-50 hover:text-gray-900">Sensor Sim</button>
+          <button type="button" data-page="logs" class="nav-btn rounded-lg px-3 py-1.5 text-xs font-medium text-gray-500 hover:bg-gray-50 hover:text-gray-900">Cloud Logs</button>
+        </nav>
+      </div>
+
+      <div class="flex items-center gap-2.5">
+        <div class="hidden items-center gap-1.5 rounded-full border border-gray-200 bg-gray-50 px-2.5 py-1 text-xs text-gray-600 sm:flex">
+          <span id="simStatusDot" class="live-dot h-1.5 w-1.5 rounded-full bg-emerald-500"></span>
+          <span id="simStatusText">Live</span>
+        </div>
+
+        <select id="activeNodeSelect" class="rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 focus:border-gray-400 focus:outline-none">
+          <option value="node-1">Shivajinagar</option>
+          <option value="node-2">Hinjewadi</option>
+          <option value="node-3">Hadapsar</option>
+        </select>
+
+        <button id="toggleSimBtn" type="button" class="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 transition hover:bg-gray-50">
+          <span id="toggleSimLabel">Pause</span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main class="mx-auto max-w-6xl px-4 py-7 sm:px-6">
+    <!-- ==================== PAGE 1: OVERVIEW ==================== -->
+    <section id="page-overview" class="page-view space-y-6">
+      <!-- Top Hero + Quick Station Switcher -->
+      <div class="flex flex-col justify-between gap-4 border-b border-gray-200 pb-6 sm:flex-row sm:items-end">
+        <div>
+          <div class="flex items-center gap-2 text-xs font-medium text-gray-500">
+            <span id="ovDeviceId" class="font-mono">ESP32-SHIV-01</span>
+            <span>&bull;</span>
+            <span id="ovLocationName">Shivajinagar, Pune</span>
+          </div>
+          <div class="mt-2 flex items-baseline gap-3">
+            <span id="aqiBigNumber" class="text-6xl font-semibold tracking-tight text-gray-900">74</span>
+            <div>
+              <span id="aqiBadge" class="inline-block rounded-full bg-amber-50 px-2.5 py-0.5 text-xs font-medium text-amber-700 ring-1 ring-amber-600/20">Moderate</span>
+              <p class="mt-1 text-xs text-gray-500">US EPA Air Quality Index</p>
+            </div>
+          </div>
+          <p id="aqiAdvice" class="mt-3 max-w-xl text-sm text-gray-600">Air quality is acceptable; unusually sensitive individuals should limit prolonged outdoor exertion.</p>
+        </div>
+
+        <div class="flex flex-wrap items-center gap-2">
+          <button type="button" data-goto="map" class="goto-btn inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs font-medium text-gray-700 hover:bg-gray-50">
+            <i data-lucide="map-pin" class="h-3.5 w-3.5 text-gray-500"></i>
+            <span>Open Pune Map</span>
+          </button>
+          <button type="button" data-goto="simulator" class="goto-btn inline-flex items-center gap-1.5 rounded-lg bg-gray-900 px-3 py-2 text-xs font-medium text-white hover:bg-gray-800">
+            <i data-lucide="sliders-horizontal" class="h-3.5 w-3.5"></i>
+            <span>Adjust Sensors</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- 4 Minimal Metric Tiles -->
+      <div class="grid grid-cols-2 gap-4 sm:grid-cols-4">
+        <div class="rounded-xl border border-gray-200 bg-white p-4">
+          <div class="text-xs font-medium text-gray-500">PM2.5</div>
+          <div class="mt-2 flex items-baseline gap-1">
+            <span id="kpiPm25" class="text-2xl font-semibold text-gray-900">22.4</span>
+            <span class="text-xs text-gray-400">&micro;g/m&sup3;</span>
+          </div>
+          <div class="mt-1 text-[11px] text-gray-400">24h guideline: 35</div>
+        </div>
+
+        <div class="rounded-xl border border-gray-200 bg-white p-4">
+          <div class="text-xs font-medium text-gray-500">PM10</div>
+          <div class="mt-2 flex items-baseline gap-1">
+            <span id="kpiPm10" class="text-2xl font-semibold text-gray-900">44</span>
+            <span class="text-xs text-gray-400">&micro;g/m&sup3;</span>
+          </div>
+          <div class="mt-1 text-[11px] text-gray-400">24h guideline: 150</div>
+        </div>
+
+        <div class="rounded-xl border border-gray-200 bg-white p-4">
+          <div class="text-xs font-medium text-gray-500">CO&#8322;</div>
+          <div class="mt-2 flex items-baseline gap-1">
+            <span id="kpiCo2" class="text-2xl font-semibold text-gray-900">560</span>
+            <span class="text-xs text-gray-400">ppm</span>
+          </div>
+          <div id="kpiCo2Status" class="mt-1 text-[11px] text-emerald-600">Normal ventilation</div>
+        </div>
+
+        <div class="rounded-xl border border-gray-200 bg-white p-4">
+          <div class="text-xs font-medium text-gray-500">Temperature &amp; RH</div>
+          <div class="mt-2 flex items-baseline gap-2">
+            <span id="kpiTemp" class="text-2xl font-semibold text-gray-900">27.5&deg;C</span>
+            <span id="kpiHum" class="text-sm font-medium text-gray-500">52%</span>
+          </div>
+          <div class="mt-1 text-[11px] text-gray-400">DHT22 virtual feed</div>
+        </div>
+      </div>
+
+      <!-- Clean Time-Series Chart + Station Summary -->
+      <div class="grid grid-cols-1 gap-6 lg:grid-cols-12">
+        <div class="rounded-xl border border-gray-200 bg-white p-5 lg:col-span-8">
+          <div class="mb-4 flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h2 class="text-sm font-semibold text-gray-900">Live Telemetry Trend</h2>
+              <p class="text-xs text-gray-500">Last 30 readings from simulated cloud stream</p>
+            </div>
+            <div class="flex items-center gap-4 text-xs text-gray-600">
+              <label class="flex cursor-pointer items-center gap-1.5">
+                <input id="chkShowAqi" type="checkbox" checked class="rounded border-gray-300" />
+                <span>AQI</span>
+              </label>
+              <label class="flex cursor-pointer items-center gap-1.5">
+                <input id="chkShowPm25" type="checkbox" checked class="rounded border-gray-300" />
+                <span>PM2.5</span>
+              </label>
+              <label class="flex cursor-pointer items-center gap-1.5">
+                <input id="chkShowPm10" type="checkbox" class="rounded border-gray-300" />
+                <span>PM10</span>
+              </label>
+            </div>
+          </div>
+          <div class="relative h-72">
+            <canvas id="telemetryChart"></canvas>
+          </div>
+        </div>
+
+        <div class="rounded-xl border border-gray-200 bg-white p-5 lg:col-span-4">
+          <h2 class="text-sm font-semibold text-gray-900">Pune Stations</h2>
+          <p class="mb-4 text-xs text-gray-500">Current AQI across all virtual nodes</p>
+          <div id="stationSummaryList" class="space-y-3">
+            <!-- Populated dynamically -->
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== PAGE 2: PUNE MAP ==================== -->
+    <section id="page-map" class="page-view hidden space-y-5">
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 class="text-lg font-semibold text-gray-900">Pune Region AQI Map</h1>
+          <p class="text-xs text-gray-500">Live dispersion plumes and wind drift across Shivajinagar, Hinjewadi, and Hadapsar</p>
+        </div>
+
+        <div class="flex flex-wrap items-center gap-2 text-xs">
+          <div class="flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5">
+            <span class="text-gray-500">Wind:</span>
+            <select id="windDirSelect" class="bg-transparent font-medium text-gray-900 focus:outline-none">
+              <option value="NW">NW (14 km/h)</option>
+              <option value="W">W (18 km/h)</option>
+              <option value="SE">SE (10 km/h)</option>
+              <option value="CALM">Calm (2 km/h)</option>
+            </select>
+          </div>
+          <button id="btnMapLight" type="button" class="rounded-lg bg-gray-900 px-3 py-1.5 font-medium text-white">Light</button>
+          <button id="btnMapStreet" type="button" class="rounded-lg border border-gray-200 bg-white px-3 py-1.5 font-medium text-gray-700 hover:bg-gray-50">Streets</button>
+          <button id="btnMapCenter" type="button" class="rounded-lg border border-gray-200 bg-white px-3 py-1.5 font-medium text-gray-700 hover:bg-gray-50">Reset View</button>
+        </div>
+      </div>
+
+      <!-- Packet Flow Bar -->
+      <div class="flex items-center gap-3 rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-xs">
+        <span id="flowNodeLabel" class="font-mono font-medium text-gray-900">ESP32-SHIV-01</span>
+        <div id="packetTrack" class="relative h-1.5 flex-1 overflow-hidden rounded-full bg-gray-100"></div>
+        <span class="font-mono text-gray-500">Cloud Broker</span>
+        <span id="flowPacketBadge" class="rounded-full bg-emerald-50 px-2 py-0.5 font-mono text-[10px] font-medium text-emerald-700">ACK 200</span>
+      </div>
+
+      <div class="overflow-hidden rounded-xl border border-gray-200 bg-white">
+        <div id="puneMap" class="w-full" style="height: 460px;"></div>
+      </div>
+    </section>
+
+    <!-- ==================== PAGE 3: SENSOR SIMULATOR ==================== -->
+    <section id="page-simulator" class="page-view hidden space-y-6">
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 class="text-lg font-semibold text-gray-900">Virtual Sensor Simulator</h1>
+          <p class="text-xs text-gray-500">Adjust virtual ESP32 sensor outputs or inject pollution events</p>
+        </div>
+        <div class="flex flex-wrap items-center gap-2">
+          <button id="btnScenarioClean" type="button" class="rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50">Clean Breeze</button>
+          <button id="btnScenarioTraffic" type="button" class="rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs font-medium text-amber-700 hover:bg-amber-50">Rush Hour Spike</button>
+          <button id="btnScenarioSmoke" type="button" class="rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-50">Smoke / Hazard</button>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 gap-6 lg:grid-cols-12">
+        <!-- Sliders Card -->
+        <div class="rounded-xl border border-gray-200 bg-white p-5 lg:col-span-7">
+          <div class="mb-5 flex items-center justify-between border-b border-gray-100 pb-3">
+            <div class="flex items-center gap-2">
+              <span class="text-sm font-semibold text-gray-900">Node Parameters</span>
+              <span id="simDeviceBadge" class="rounded bg-gray-100 px-2 py-0.5 font-mono text-[11px] text-gray-600">ESP32-SHIV-01</span>
+            </div>
+            <label class="flex cursor-pointer items-center gap-2 text-xs text-gray-600">
+              <input id="autoDriftToggle" type="checkbox" checked class="rounded border-gray-300" />
+              <span>Auto-Drift</span>
+            </label>
+          </div>
+
+          <div class="space-y-4">
+            <div>
+              <div class="mb-1 flex justify-between text-xs">
+                <span class="font-medium text-gray-700">PM2.5 Concentration</span>
+                <span id="sliderValPm25" class="font-mono text-gray-900">22.4 &micro;g/m&sup3;</span>
+              </div>
+              <input id="sliderPm25" type="range" min="0" max="300" step="0.5" value="22.4" class="w-full cursor-pointer" />
+            </div>
+
+            <div>
+              <div class="mb-1 flex justify-between text-xs">
+                <span class="font-medium text-gray-700">PM10 Concentration</span>
+                <span id="sliderValPm10" class="font-mono text-gray-900">44 &micro;g/m&sup3;</span>
+              </div>
+              <input id="sliderPm10" type="range" min="0" max="450" step="1" value="44" class="w-full cursor-pointer" />
+            </div>
+
+            <div>
+              <div class="mb-1 flex justify-between text-xs">
+                <span class="font-medium text-gray-700">CO&#8322; Level</span>
+                <span id="sliderValCo2" class="font-mono text-gray-900">560 ppm</span>
+              </div>
+              <input id="sliderCo2" type="range" min="350" max="2500" step="10" value="560" class="w-full cursor-pointer" />
+            </div>
+
+            <div class="grid grid-cols-2 gap-4">
+              <div>
+                <div class="mb-1 flex justify-between text-xs">
+                  <span class="font-medium text-gray-700">Temperature</span>
+                  <span id="sliderValTemp" class="font-mono text-gray-900">27.5 &deg;C</span>
+                </div>
+                <input id="sliderTemp" type="range" min="5" max="48" step="0.5" value="27.5" class="w-full cursor-pointer" />
+              </div>
+              <div>
+                <div class="mb-1 flex justify-between text-xs">
+                  <span class="font-medium text-gray-700">Humidity</span>
+                  <span id="sliderValHum" class="font-mono text-gray-900">52%</span>
+                </div>
+                <input id="sliderHum" type="range" min="15" max="95" step="1" value="52" class="w-full cursor-pointer" />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Network & Sampling Settings -->
+        <div class="space-y-4 lg:col-span-5">
+          <div class="rounded-xl border border-gray-200 bg-white p-5">
+            <h2 class="mb-3 text-sm font-semibold text-gray-900">Network &amp; Sampling</h2>
+            <div class="space-y-4">
+              <div>
+                <label class="mb-1 block text-xs font-medium text-gray-700">Sampling Interval</label>
+                <select id="intervalSelect" class="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs text-gray-800 focus:border-gray-400 focus:outline-none">
+                  <option value="1000">Every 1 second</option>
+                  <option value="2000" selected>Every 2 seconds</option>
+                  <option value="5000">Every 5 seconds</option>
+                </select>
+              </div>
+              <div>
+                <div class="mb-1 flex justify-between text-xs">
+                  <span class="font-medium text-gray-700">Simulated Packet Loss</span>
+                  <span id="sliderValLoss" class="font-mono text-gray-900">0%</span>
+                </div>
+                <input id="sliderLoss" type="range" min="0" max="40" step="5" value="0" class="w-full cursor-pointer" />
+              </div>
+            </div>
+          </div>
+
+          <div class="rounded-xl border border-gray-200 bg-white p-5">
+            <h2 class="mb-2 text-sm font-semibold text-gray-900">Multi-Node AQI</h2>
+            <div class="relative h-44">
+              <canvas id="nodeBarChart"></canvas>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== PAGE 4: CLOUD LOGS ==================== -->
+    <section id="page-logs" class="page-view hidden space-y-6">
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 class="text-lg font-semibold text-gray-900">Cloud MQTT Stream &amp; Alerts</h1>
+          <p class="text-xs text-gray-500">Simulated broker telemetry payloads, delivery metrics, and threshold alerts</p>
+        </div>
+        <div class="flex items-center gap-2">
+          <button id="copyPayloadBtn" type="button" class="rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50">Copy Latest JSON</button>
+          <button id="exportCsvBtn" type="button" class="rounded-lg bg-gray-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-gray-800">Export CSV</button>
+        </div>
+      </div>
+
+      <!-- Delivery Stats -->
+      <div class="grid grid-cols-2 gap-4 sm:grid-cols-4">
+        <div class="rounded-xl border border-gray-200 bg-white p-4">
+          <div class="text-xs text-gray-500">Packets Sent</div>
+          <div id="statPacketsSent" class="mt-1 font-mono text-xl font-semibold text-gray-900">0</div>
+        </div>
+        <div class="rounded-xl border border-gray-200 bg-white p-4">
+          <div class="text-xs text-gray-500">Delivered (200 OK)</div>
+          <div id="statPacketsOk" class="mt-1 font-mono text-xl font-semibold text-emerald-600">0</div>
+        </div>
+        <div class="rounded-xl border border-gray-200 bg-white p-4">
+          <div class="text-xs text-gray-500">Dropped</div>
+          <div id="statPacketsDrop" class="mt-1 font-mono text-xl font-semibold text-rose-600">0</div>
+        </div>
+        <div class="rounded-xl border border-gray-200 bg-white p-4">
+          <div class="text-xs text-gray-500">Avg Latency</div>
+          <div id="statAvgLatency" class="mt-1 font-mono text-xl font-semibold text-gray-900">0 ms</div>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 gap-6 lg:grid-cols-12">
+        <!-- JSON Stream -->
+        <div class="rounded-xl border border-gray-200 bg-white p-5 lg:col-span-7">
+          <div class="mb-3 flex items-center justify-between">
+            <div class="font-mono text-xs text-gray-500">Topic: <span id="mqttTopicText" class="text-gray-900">iot/aqi/ESP32-SHIV-01/telemetry</span></div>
+            <button id="clearStreamBtn" type="button" class="text-xs font-medium text-gray-500 hover:text-gray-900">Clear</button>
+          </div>
+          <div id="mqttStreamLog" class="clean-scroll h-80 space-y-2 overflow-y-auto rounded-lg border border-gray-100 bg-gray-50 p-3 font-mono text-[11px]"></div>
+        </div>
+
+        <!-- Alert Engine -->
+        <div class="rounded-xl border border-gray-200 bg-white p-5 lg:col-span-5">
+          <div class="mb-3 flex items-center justify-between">
+            <h2 class="text-sm font-semibold text-gray-900">Threshold Alerts</h2>
+            <button id="clearAlertsBtn" type="button" class="text-xs font-medium text-gray-500 hover:text-gray-900">Clear</button>
+          </div>
+          <div class="mb-4 flex items-center justify-between rounded-lg border border-gray-100 bg-gray-50 px-3 py-2 text-xs">
+            <span class="text-gray-600">Alert when AQI &gt;</span>
+            <div class="flex items-center gap-2">
+              <input id="alertThresholdSlider" type="range" min="50" max="250" step="10" value="100" class="w-24 cursor-pointer" />
+              <span id="alertThresholdVal" class="font-mono font-semibold text-gray-900">100</span>
+            </div>
+          </div>
+          <div id="alertLogList" class="clean-scroll h-64 space-y-2 overflow-y-auto text-xs"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    // ---- 2024 US EPA PM2.5 AQI Breakpoints ----
+    const PM25_BREAKPOINTS = [
+      { cLow: 0.0,   cHigh: 9.0,   iLow: 0,   iHigh: 50 },
+      { cLow: 9.1,   cHigh: 35.4,  iLow: 51,  iHigh: 100 },
+      { cLow: 35.5,  cHigh: 55.4,  iLow: 101, iHigh: 150 },
+      { cLow: 55.5,  cHigh: 125.4, iLow: 151, iHigh: 200 },
+      { cLow: 125.5, cHigh: 225.4, iLow: 201, iHigh: 300 },
+      { cLow: 225.5, cHigh: 325.4, iLow: 301, iHigh: 500 }
+    ];
+
+    function calcPm25Aqi(pm25) {
+      const c = Math.max(0, Math.floor(pm25 * 10) / 10);
+      for (const bp of PM25_BREAKPOINTS) {
+        if (c <= bp.cHigh) {
+          return Math.round(((bp.iHigh - bp.iLow) / (bp.cHigh - bp.cLow)) * (c - bp.cLow) + bp.iLow);
+        }
+      }
+      return 500;
+    }
+
+    function getAqiMeta(aqi) {
+      if (aqi <= 50) return { label: 'Good', color: '#10b981', badge: 'bg-emerald-50 text-emerald-700 ring-emerald-600/20', advice: 'Air quality is satisfactory with little or no risk.' };
+      if (aqi <= 100) return { label: 'Moderate', color: '#eab308', badge: 'bg-amber-50 text-amber-700 ring-amber-600/20', advice: 'Air quality is acceptable; unusually sensitive individuals should limit prolonged outdoor exertion.' };
+      if (aqi <= 150) return { label: 'Sensitive Groups', color: '#f97316', badge: 'bg-orange-50 text-orange-700 ring-orange-600/20', advice: 'Sensitive groups may experience health effects. General public is less likely to be affected.' };
+      if (aqi <= 200) return { label: 'Unhealthy', color: '#ef4444', badge: 'bg-rose-50 text-rose-700 ring-rose-600/20', advice: 'Everyone may begin to experience health effects; sensitive groups should avoid prolonged outdoor exertion.' };
+      if (aqi <= 300) return { label: 'Very Unhealthy', color: '#9333ea', badge: 'bg-purple-50 text-purple-700 ring-purple-600/20', advice: 'Health alert: everyone may experience more serious health effects.' };
+      return { label: 'Hazardous', color: '#9f1239', badge: 'bg-rose-100 text-rose-900 ring-rose-700/30', advice: 'Health warning of emergency conditions: everyone should avoid all outdoor exertion.' };
+    }
+
+    // ---- State ----
+    const state = {
+      currentPage: 'overview',
+      running: true,
+      intervalMs: 2000,
+      autoDrift: true,
+      packetLossPct: 0,
+      alertThreshold: 100,
+      activeNodeId: 'node-1',
+      windDir: 'NW',
+      packetsSent: 0,
+      packetsOk: 0,
+      packetsDrop: 0,
+      latencies: [],
+      timerId: null,
+      nodes: {
+        'node-1': { id: 'ESP32-SHIV-01', name: 'Shivajinagar', lat: 18.5326, lng: 73.8513, pm25: 22.4, pm10: 44, co2: 560, temp: 27.5, hum: 52, history: [] },
+        'node-2': { id: 'ESP32-HINJ-02', name: 'Hinjewadi',    lat: 18.5904, lng: 73.7367, pm25: 7.2,  pm10: 14, co2: 680, temp: 25.0, hum: 48, history: [] },
+        'node-3': { id: 'ESP32-HADP-03', name: 'Hadapsar',     lat: 18.5089, lng: 73.9260, pm25: 58.6, pm10: 112, co2: 890, temp: 29.5, hum: 42, history: [] }
+      },
+      streamLogs: [],
+      alerts: [],
+      csvRows: []
+    };
+
+    const WIND_OFFSETS = {
+      NW: { dLat: -0.014, dLng: 0.016 },
+      W:  { dLat: 0.002,  dLng: 0.020 },
+      SE: { dLat: 0.013,  dLng: -0.014 },
+      CALM: { dLat: 0.0,  dLng: 0.0 }
+    };
+
+    // ---- Navigation ----
+    function showPage(pageName) {
+      state.currentPage = pageName;
+      document.querySelectorAll('.page-view').forEach((el) => {
+        el.classList.toggle('hidden', el.id !== `page-${pageName}`);
+      });
+      document.querySelectorAll('.nav-btn').forEach((btn) => {
+        const active = btn.dataset.page === pageName;
+        btn.className = active
+          ? 'nav-btn rounded-lg bg-gray-100 px-3 py-1.5 text-xs font-medium text-gray-900'
+          : 'nav-btn rounded-lg px-3 py-1.5 text-xs font-medium text-gray-500 hover:bg-gray-50 hover:text-gray-900';
+      });
+      if (pageName === 'map' && puneMap) {
+        setTimeout(() => {
+          puneMap.invalidateSize();
+          updatePuneMapMarkers();
+        }, 60);
+      }
+      if (pageName === 'overview' && telemetryChart) {
+        setTimeout(() => telemetryChart.resize(), 40);
+      }
+      if (pageName === 'simulator' && nodeBarChart) {
+        setTimeout(() => nodeBarChart.resize(), 40);
+      }
+    }
+
+    // ---- Charts ----
+    let telemetryChart = null;
+    let nodeBarChart = null;
+
+    function initCharts() {
+      const ctx1 = document.getElementById('telemetryChart').getContext('2d');
+      telemetryChart = new Chart(ctx1, {
+        type: 'line',
+        data: {
+          labels: [],
+          datasets: [
+            { label: 'AQI', data: [], borderColor: '#111827', backgroundColor: 'rgba(17, 24, 39, 0.06)', borderWidth: 2, tension: 0.3, fill: true, pointRadius: 2 },
+            { label: 'PM2.5', data: [], borderColor: '#2563eb', backgroundColor: 'transparent', borderWidth: 1.75, tension: 0.3, pointRadius: 1.5 },
+            { label: 'PM10', data: [], borderColor: '#9ca3af', backgroundColor: 'transparent', borderWidth: 1.5, borderDash: [4, 4], tension: 0.3, pointRadius: 0 }
+          ]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: { duration: 200 },
+          interaction: { mode: 'index', intersect: false },
+          plugins: { legend: { display: false } },
+          scales: {
+            x: { grid: { display: false }, ticks: { color: '#6b7280', maxTicksLimit: 7, font: { size: 11 } } },
+            y: { beginAtZero: true, grid: { color: '#f3f4f6' }, ticks: { color: '#6b7280', font: { size: 11 } } }
+          }
+        }
+      });
+
+      const ctx2 = document.getElementById('nodeBarChart').getContext('2d');
+      nodeBarChart = new Chart(ctx2, {
+        type: 'bar',
+        data: {
+          labels: ['Shivajinagar', 'Hinjewadi', 'Hadapsar'],
+          datasets: [{
+            label: 'AQI',
+            data: [0, 0, 0],
+            backgroundColor: ['#eab308', '#10b981', '#f97316'],
+            borderRadius: 6,
+            barThickness: 28
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: { duration: 200 },
+          plugins: { legend: { display: false } },
+          scales: {
+            x: { grid: { display: false }, ticks: { color: '#374151', font: { size: 11 } } },
+            y: { beginAtZero: true, suggestedMax: 180, grid: { color: '#f3f4f6' }, ticks: { color: '#6b7280', font: { size: 11 } } }
+          }
+        }
+      });
+    }
+
+    // ---- Pune Leaflet Map ----
+    let puneMap = null;
+    let mapLightLayer = null;
+    let mapStreetLayer = null;
+    const mapMarkers = {};
+    const mapHalos = {};
+    const mapPlumes = {};
+
+    function initPuneMap() {
+      if (typeof L === 'undefined') return;
+      puneMap = L.map('puneMap', { zoomControl: true }).setView([18.535, 73.845], 11);
+
+      mapLightLayer = L.tileLayer(
+        'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}',
+        { attribution: 'Tiles &copy; Esri', maxZoom: 16 }
+      ).addTo(puneMap);
+
+      mapStreetLayer = L.tileLayer(
+        'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',
+        { attribution: 'Tiles &copy; Esri', maxZoom: 18 }
+      );
+
+      Object.keys(state.nodes).forEach((key) => {
+        const node = state.nodes[key];
+        const plume = L.circle([node.lat, node.lng], {
+          radius: 1800,
+          stroke: false,
+          fillColor: '#10b981',
+          fillOpacity: 0.16,
+          interactive: false
+        }).addTo(puneMap);
+        mapPlumes[key] = plume;
+
+        const haloIcon = L.divIcon({
+          className: 'aqi-halo',
+          html: '<div class="aqi-halo-ring" style="width:40px;height:40px;background:rgba(16,185,129,0.4);"></div>',
+          iconSize: [0, 0]
+        });
+        mapHalos[key] = L.marker([node.lat, node.lng], { icon: haloIcon, interactive: false }).addTo(puneMap);
+
+        const marker = L.circleMarker([node.lat, node.lng], {
+          radius: 12,
+          color: '#ffffff',
+          weight: 2,
+          fillColor: '#10b981',
+          fillOpacity: 0.95
+        }).addTo(puneMap);
+
+        marker.bindTooltip(`${node.name}`, { permanent: true, direction: 'top', offset: [0, -10] });
+        marker.on('click', () => selectNode(key));
+        mapMarkers[key] = marker;
+      });
+    }
+
+    function updatePuneMapMarkers() {
+      if (!puneMap) return;
+      const wind = WIND_OFFSETS[state.windDir] || WIND_OFFSETS.NW;
+      Object.keys(state.nodes).forEach((key) => {
+        const node = state.nodes[key];
+        const aqi = calcPm25Aqi(node.pm25);
+        const meta = getAqiMeta(aqi);
+        const marker = mapMarkers[key];
+        if (!marker) return;
+        const isActive = key === state.activeNodeId;
+
+        marker.setStyle({
+          radius: isActive ? 14 : 11,
+          color: isActive ? '#111827' : '#ffffff',
+          weight: isActive ? 2.5 : 2,
+          fillColor: meta.color,
+          fillOpacity: 0.95
+        });
+        marker.setTooltipContent(`${node.name}: ${aqi}`);
+        marker.bindPopup(
+          `<div style="font-family:Inter,sans-serif;font-size:12px;color:#111827;">` +
+          `<strong>${node.name}</strong> (${node.id})<br/>` +
+          `AQI: <strong>${aqi}</strong> &bull; ${meta.label}<br/>` +
+          `PM2.5: ${node.pm25.toFixed(1)} µg/m³ &bull; CO₂: ${node.co2} ppm</div>`
+        );
+
+        const plume = mapPlumes[key];
+        if (plume) {
+          plume.setLatLng([node.lat + wind.dLat, node.lng + wind.dLng]);
+          plume.setRadius(clamp(1200 + aqi * 18, 1200, 6200));
+          plume.setStyle({ fillColor: meta.color, fillOpacity: clamp(0.14 + aqi / 900, 0.14, 0.38) });
+        }
+
+        const halo = mapHalos[key];
+        if (halo) {
+          const size = clamp(34 + Math.round(aqi / 6), 34, 80);
+          halo.setIcon(L.divIcon({
+            className: 'aqi-halo',
+            html: `<div class="aqi-halo-ring" style="width:${size}px;height:${size}px;background:${meta.color};opacity:0.4;"></div>`,
+            iconSize: [0, 0]
+          }));
+        }
+      });
+    }
+
+    function triggerPacketAnimation(deviceId, dropped) {
+      const label = document.getElementById('flowNodeLabel');
+      const track = document.getElementById('packetTrack');
+      const badge = document.getElementById('flowPacketBadge');
+      if (!label || !track || !badge) return;
+      label.textContent = deviceId;
+      badge.textContent = dropped ? 'DROPPED' : 'ACK 200';
+      badge.className = dropped
+        ? 'rounded-full bg-rose-50 px-2 py-0.5 font-mono text-[10px] font-medium text-rose-700'
+        : 'rounded-full bg-emerald-50 px-2 py-0.5 font-mono text-[10px] font-medium text-emerald-700';
+
+      const dot = document.createElement('div');
+      dot.className = `packet-dot ${dropped ? 'bg-rose-500' : 'bg-gray-900'}`;
+      track.appendChild(dot);
+      setTimeout(() => { if (dot.parentNode) dot.parentNode.removeChild(dot); }, 720);
+    }
+
+    function showToast(msg) {
+      const toast = document.getElementById('toast');
+      document.getElementById('toastText').textContent = msg;
+      toast.classList.remove('hidden');
+      toast.classList.add('flex');
+      setTimeout(() => {
+        toast.classList.add('hidden');
+        toast.classList.remove('flex');
+      }, 2200);
+    }
+
+    function clamp(val, min, max) {
+      return Math.min(max, Math.max(min, val));
+    }
+
+    function selectNode(nodeKey) {
+      state.activeNodeId = nodeKey;
+      document.getElementById('activeNodeSelect').value = nodeKey;
+      renderAll();
+    }
+
+    function stepSimulation(isSeed = false, seedTime = null) {
+      const now = seedTime || new Date();
+      const ts = now.toTimeString().slice(0, 8);
+
+      Object.keys(state.nodes).forEach((key) => {
+        const node = state.nodes[key];
+        if (state.autoDrift) {
+          node.pm25 = clamp(Number((node.pm25 + (Math.random() - 0.49) * 2.4).toFixed(1)), 1.0, 300.0);
+          node.pm10 = clamp(Math.round(node.pm10 + (Math.random() - 0.49) * 4.5), 2, 450);
+          node.co2 = clamp(Math.round(node.co2 + (Math.random() - 0.5) * 22), 380, 2500);
+          node.temp = clamp(Number((node.temp + (Math.random() - 0.5) * 0.3).toFixed(1)), 5, 48);
+          node.hum = clamp(Math.round(node.hum + (Math.random() - 0.5) * 1.6), 15, 95);
+        }
+
+        const aqi = calcPm25Aqi(node.pm25);
+        const dropped = !isSeed && (Math.random() * 100 < state.packetLossPct);
+        const latency = Math.round(28 + Math.random() * 65);
+
+        if (!isSeed) {
+          state.packetsSent += 1;
+          if (dropped) {
+            state.packetsDrop += 1;
+          } else {
+            state.packetsOk += 1;
+            state.latencies.push(latency);
+            if (state.latencies.length > 40) state.latencies.shift();
+          }
+        }
+
+        if (!dropped) {
+          node.history.push({ ts, pm25: node.pm25, pm10: node.pm10, co2: node.co2, temp: node.temp, hum: node.hum, aqi });
+          if (node.history.length > 30) node.history.shift();
+        }
+
+        if (key === state.activeNodeId) {
+          const payload = {
+            device: node.id,
+            area: node.name,
+            ts: now.toISOString(),
+            pm25: node.pm25,
+            pm10: node.pm10,
+            co2: node.co2,
+            temp: node.temp,
+            hum: node.hum,
+            aqi
+          };
+          state.streamLogs.unshift({ ts, dropped, latency, payload });
+          if (state.streamLogs.length > 25) state.streamLogs.pop();
+
+          if (!isSeed) triggerPacketAnimation(node.id, dropped);
+
+          if (!isSeed && !dropped) {
+            state.csvRows.push([now.toISOString(), node.id, node.name, node.pm25, node.pm10, node.co2, node.temp, node.hum, aqi]);
+            if (aqi > state.alertThreshold) {
+              const meta = getAqiMeta(aqi);
+              state.alerts.unshift({ ts, device: node.id, area: node.name, aqi, pm25: node.pm25, level: meta.label });
+              if (state.alerts.length > 20) state.alerts.pop();
+            }
+          }
+        }
+      });
+
+      renderAll();
+    }
+
+    function renderAll() {
+      const node = state.nodes[state.activeNodeId];
+      const aqi = calcPm25Aqi(node.pm25);
+      const meta = getAqiMeta(aqi);
+
+      // Overview Hero & KPIs
+      document.getElementById('ovDeviceId').textContent = node.id;
+      document.getElementById('ovLocationName').textContent = `${node.name}, Pune`;
+      document.getElementById('aqiBigNumber').textContent = aqi;
+      const badge = document.getElementById('aqiBadge');
+      badge.textContent = meta.label;
+      badge.className = `inline-block rounded-full px-2.5 py-0.5 text-xs font-medium ring-1 ${meta.badge}`;
+      document.getElementById('aqiAdvice').textContent = meta.advice;
+
+      document.getElementById('kpiPm25').textContent = node.pm25.toFixed(1);
+      document.getElementById('kpiPm10').textContent = node.pm10;
+      document.getElementById('kpiCo2').textContent = node.co2;
+      const co2Status = document.getElementById('kpiCo2Status');
+      if (node.co2 > 1200) {
+        co2Status.textContent = 'Poor ventilation';
+        co2Status.className = 'mt-1 text-[11px] text-rose-600';
+      } else if (node.co2 > 800) {
+        co2Status.textContent = 'Moderate indoor CO₂';
+        co2Status.className = 'mt-1 text-[11px] text-amber-600';
+      } else {
+        co2Status.textContent = 'Normal ventilation';
+        co2Status.className = 'mt-1 text-[11px] text-emerald-600';
+      }
+      document.getElementById('kpiTemp').textContent = `${node.temp.toFixed(1)}°C`;
+      document.getElementById('kpiHum').textContent = `${node.hum}%`;
+
+      // Station Summary List (Overview)
+      const listEl = document.getElementById('stationSummaryList');
+      listEl.innerHTML = Object.keys(state.nodes).map((key) => {
+        const n = state.nodes[key];
+        const nAqi = calcPm25Aqi(n.pm25);
+        const nMeta = getAqiMeta(nAqi);
+        const active = key === state.activeNodeId;
+        return `<button type="button" data-station="${key}" class="station-pick flex w-full items-center justify-between rounded-lg border px-3 py-2.5 text-left transition ${active ? 'border-gray-900 bg-gray-50' : 'border-gray-100 hover:border-gray-200 hover:bg-gray-50/50'}">
+          <div>
+            <div class="text-xs font-semibold text-gray-900">${n.name}</div>
+            <div class="font-mono text-[11px] text-gray-400">${n.id}</div>
+          </div>
+          <div class="text-right">
+            <div class="text-sm font-semibold text-gray-900">${nAqi}</div>
+            <div class="text-[11px] font-medium" style="color:${nMeta.color}">${nMeta.label}</div>
+          </div>
+        </button>`;
+      }).join('');
+      listEl.querySelectorAll('.station-pick').forEach((btn) => {
+        btn.addEventListener('click', () => selectNode(btn.dataset.station));
+      });
+
+      // Simulator Sliders
+      document.getElementById('simDeviceBadge').textContent = node.id;
+      document.getElementById('mqttTopicText').textContent = `iot/aqi/${node.id}/telemetry`;
+      document.getElementById('sliderPm25').value = node.pm25;
+      document.getElementById('sliderValPm25').textContent = `${node.pm25.toFixed(1)} µg/m³`;
+      document.getElementById('sliderPm10').value = node.pm10;
+      document.getElementById('sliderValPm10').textContent = `${node.pm10} µg/m³`;
+      document.getElementById('sliderCo2').value = node.co2;
+      document.getElementById('sliderValCo2').textContent = `${node.co2} ppm`;
+      document.getElementById('sliderTemp').value = node.temp;
+      document.getElementById('sliderValTemp').textContent = `${node.temp.toFixed(1)} °C`;
+      document.getElementById('sliderHum').value = node.hum;
+      document.getElementById('sliderValHum').textContent = `${node.hum}%`;
+
+      // Cloud Logs Stats
+      document.getElementById('statPacketsSent').textContent = state.packetsSent;
+      document.getElementById('statPacketsOk').textContent = state.packetsOk;
+      document.getElementById('statPacketsDrop').textContent = state.packetsDrop;
+      const avgLat = state.latencies.length ? Math.round(state.latencies.reduce((a, b) => a + b, 0) / state.latencies.length) : 0;
+      document.getElementById('statAvgLatency').textContent = `${avgLat} ms`;
+
+      // MQTT Stream Log
+      const logBox = document.getElementById('mqttStreamLog');
+      logBox.innerHTML = state.streamLogs.map((entry) => {
+        if (entry.dropped) {
+          return `<div class="rounded-lg border border-rose-200 bg-rose-50/70 p-2 text-rose-800">
+            <div class="mb-0.5 flex justify-between text-[10px]">
+              <span>[${entry.ts}] TIMEOUT</span>
+              <span class="font-semibold">DROPPED</span>
+            </div>
+            <div class="truncate text-rose-700">${JSON.stringify(entry.payload)}</div>
+          </div>`;
+        }
+        return `<div class="rounded-lg border border-gray-200 bg-white p-2">
+          <div class="mb-0.5 flex justify-between text-[10px] text-gray-400">
+            <span>[${entry.ts}] QoS 1 &bull; ${entry.latency}ms</span>
+            <span class="font-medium text-emerald-600">200 OK</span>
+          </div>
+          <div class="break-all text-gray-700">${JSON.stringify(entry.payload)}</div>
+        </div>`;
+      }).join('');
+
+      // Alerts List
+      const alertBox = document.getElementById('alertLogList');
+      if (state.alerts.length === 0) {
+        alertBox.innerHTML = `<div class="rounded-lg border border-gray-100 bg-gray-50 p-3 text-gray-500">No threshold breaches yet.</div>`;
+      } else {
+        alertBox.innerHTML = state.alerts.map((al) => `
+          <div class="flex items-center justify-between rounded-lg border border-rose-200 bg-rose-50/60 px-3 py-2">
+            <div>
+              <div class="font-medium text-rose-900">${al.area} &bull; AQI ${al.aqi} (${al.level})</div>
+              <div class="text-[11px] text-rose-700">PM2.5 reached ${al.pm25} µg/m³</div>
+            </div>
+            <span class="font-mono text-[11px] text-rose-600">${al.ts}</span>
+          </div>
+        `).join('');
+      }
+
+      // Charts & Map
+      if (telemetryChart) {
+        telemetryChart.data.labels = node.history.map((h) => h.ts);
+        telemetryChart.data.datasets[0].data = node.history.map((h) => h.aqi);
+        telemetryChart.data.datasets[1].data = node.history.map((h) => h.pm25);
+        telemetryChart.data.datasets[2].data = node.history.map((h) => h.pm10);
+        telemetryChart.data.datasets[0].hidden = !document.getElementById('chkShowAqi').checked;
+        telemetryChart.data.datasets[1].hidden = !document.getElementById('chkShowPm25').checked;
+        telemetryChart.data.datasets[2].hidden = !document.getElementById('chkShowPm10').checked;
+        telemetryChart.update();
+      }
+
+      if (nodeBarChart) {
+        const keys = ['node-1', 'node-2', 'node-3'];
+        const aqis = keys.map((k) => calcPm25Aqi(state.nodes[k].pm25));
+        nodeBarChart.data.datasets[0].data = aqis;
+        nodeBarChart.data.datasets[0].backgroundColor = aqis.map((v) => getAqiMeta(v).color);
+        nodeBarChart.update();
+      }
+
+      updatePuneMapMarkers();
+    }
+
+    function startLoop() {
+      if (state.timerId) clearInterval(state.timerId);
+      if (state.running) {
+        state.timerId = setInterval(() => stepSimulation(false), state.intervalMs);
+      }
+    }
+
+    function bindEvents() {
+      document.querySelectorAll('.nav-btn').forEach((btn) => {
+        btn.addEventListener('click', () => showPage(btn.dataset.page));
+      });
+      document.querySelectorAll('.goto-btn').forEach((btn) => {
+        btn.addEventListener('click', () => showPage(btn.dataset.goto));
+      });
+
+      document.getElementById('activeNodeSelect').addEventListener('change', (e) => selectNode(e.target.value));
+
+      document.getElementById('toggleSimBtn').addEventListener('click', () => {
+        state.running = !state.running;
+        document.getElementById('toggleSimLabel').textContent = state.running ? 'Pause' : 'Resume';
+        document.getElementById('simStatusText').textContent = state.running ? 'Live' : 'Paused';
+        document.getElementById('simStatusDot').className = state.running
+          ? 'live-dot h-1.5 w-1.5 rounded-full bg-emerald-500'
+          : 'h-1.5 w-1.5 rounded-full bg-amber-500';
+        if (state.running) startLoop();
+        else if (state.timerId) clearInterval(state.timerId);
+      });
+
+      document.getElementById('intervalSelect').addEventListener('change', (e) => {
+        state.intervalMs = Number(e.target.value);
+        startLoop();
+        showToast(`Interval set to ${state.intervalMs / 1000}s`);
+      });
+
+      document.getElementById('autoDriftToggle').addEventListener('change', (e) => {
+        state.autoDrift = e.target.checked;
+      });
+
+      document.getElementById('sliderPm25').addEventListener('input', (e) => {
+        state.nodes[state.activeNodeId].pm25 = Number(e.target.value);
+        renderAll();
+      });
+      document.getElementById('sliderPm10').addEventListener('input', (e) => {
+        state.nodes[state.activeNodeId].pm10 = Number(e.target.value);
+        renderAll();
+      });
+      document.getElementById('sliderCo2').addEventListener('input', (e) => {
+        state.nodes[state.activeNodeId].co2 = Number(e.target.value);
+        renderAll();
+      });
+      document.getElementById('sliderTemp').addEventListener('input', (e) => {
+        state.nodes[state.activeNodeId].temp = Number(e.target.value);
+        renderAll();
+      });
+      document.getElementById('sliderHum').addEventListener('input', (e) => {
+        state.nodes[state.activeNodeId].hum = Number(e.target.value);
+        renderAll();
+      });
+      document.getElementById('sliderLoss').addEventListener('input', (e) => {
+        state.packetLossPct = Number(e.target.value);
+        document.getElementById('sliderValLoss').textContent = `${state.packetLossPct}%`;
+      });
+
+      document.getElementById('btnScenarioClean').addEventListener('click', () => {
+        const n = state.nodes[state.activeNodeId];
+        n.pm25 = 6.5; n.pm10 = 14; n.co2 = 430;
+        stepSimulation(false);
+        showToast('Clean Breeze applied');
+      });
+      document.getElementById('btnScenarioTraffic').addEventListener('click', () => {
+        const n = state.nodes[state.activeNodeId];
+        n.pm25 = 48.0; n.pm10 = 96; n.co2 = 1050;
+        stepSimulation(false);
+        showToast('Rush Hour Spike injected');
+      });
+      document.getElementById('btnScenarioSmoke').addEventListener('click', () => {
+        const n = state.nodes[state.activeNodeId];
+        n.pm25 = 168.5; n.pm10 = 260; n.co2 = 1650;
+        stepSimulation(false);
+        showToast('Smoke / Hazard injected');
+      });
+
+      ['chkShowAqi', 'chkShowPm25', 'chkShowPm10'].forEach((id) => {
+        document.getElementById(id).addEventListener('change', renderAll);
+      });
+
+      document.getElementById('btnMapLight').addEventListener('click', () => {
+        if (!puneMap) return;
+        if (puneMap.hasLayer(mapStreetLayer)) puneMap.removeLayer(mapStreetLayer);
+        if (!puneMap.hasLayer(mapLightLayer)) mapLightLayer.addTo(puneMap);
+        document.getElementById('btnMapLight').className = 'rounded-lg bg-gray-900 px-3 py-1.5 font-medium text-white';
+        document.getElementById('btnMapStreet').className = 'rounded-lg border border-gray-200 bg-white px-3 py-1.5 font-medium text-gray-700 hover:bg-gray-50';
+      });
+      document.getElementById('btnMapStreet').addEventListener('click', () => {
+        if (!puneMap) return;
+        if (puneMap.hasLayer(mapLightLayer)) puneMap.removeLayer(mapLightLayer);
+        if (!puneMap.hasLayer(mapStreetLayer)) mapStreetLayer.addTo(puneMap);
+        document.getElementById('btnMapStreet').className = 'rounded-lg bg-gray-900 px-3 py-1.5 font-medium text-white';
+        document.getElementById('btnMapLight').className = 'rounded-lg border border-gray-200 bg-white px-3 py-1.5 font-medium text-gray-700 hover:bg-gray-50';
+      });
+      document.getElementById('btnMapCenter').addEventListener('click', () => {
+        if (puneMap) puneMap.setView([18.535, 73.845], 11);
+      });
+      document.getElementById('windDirSelect').addEventListener('change', (e) => {
+        state.windDir = e.target.value;
+        updatePuneMapMarkers();
+        showToast(`Wind direction: ${state.windDir}`);
+      });
+
+      document.getElementById('alertThresholdSlider').addEventListener('input', (e) => {
+        state.alertThreshold = Number(e.target.value);
+        document.getElementById('alertThresholdVal').textContent = state.alertThreshold;
+      });
+      document.getElementById('clearAlertsBtn').addEventListener('click', () => {
+        state.alerts = [];
+        renderAll();
+      });
+      document.getElementById('clearStreamBtn').addEventListener('click', () => {
+        state.streamLogs = [];
+        renderAll();
+      });
+      document.getElementById('copyPayloadBtn').addEventListener('click', () => {
+        const latest = state.streamLogs[0];
+        if (!latest) return;
+        const text = JSON.stringify(latest.payload, null, 2);
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(() => showToast('Copied JSON')).catch(() => fallbackCopy(text));
+        } else {
+          fallbackCopy(text);
+        }
+      });
+      document.getElementById('exportCsvBtn').addEventListener('click', () => {
+        const header = ['timestamp,device_id,area,pm25_ugm3,pm10_ugm3,co2_ppm,temp_c,humidity_pct,aqi'];
+        const rows = state.csvRows.map((r) => r.join(','));
+        const blob = new Blob([header.concat(rows).join('\n')], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'pune_aqi_telemetry.csv';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        showToast(`Exported ${state.csvRows.length} rows`);
+      });
+    }
+
+    function fallbackCopy(text) {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        document.execCommand('copy');
+        showToast('Copied JSON');
+      } catch (e) {
+        showToast('Copy unavailable');
+      }
+      document.body.removeChild(ta);
+    }
+
+    window.addEventListener('DOMContentLoaded', () => {
+      if (window.lucide) lucide.createIcons();
+      initCharts();
+      initPuneMap();
+      bindEvents();
+
+      const now = Date.now();
+      for (let i = 14; i >= 1; i--) {
+        stepSimulation(true, new Date(now - i * 2000));
+      }
+      stepSimulation(false);
+      startLoop();
+    });
+  </script>
+</body>
+</html>
